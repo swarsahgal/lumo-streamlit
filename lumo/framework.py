@@ -84,8 +84,9 @@ def build(courses: list[dict], level: str) -> list[dict]:
             if key in seen:
                 continue
             seen.add(key)
+            covers = re.search(r"\bcovers?:?\s+([^.\n]{3,60})", it.get("description", ""), re.I)
             topic = (x.get("item_topics", {}).get(it["title"]) or it.get("topic")
-                     or _guess_topic(it["title"], topics))
+                     or _guess_topic(it["title"], topics) or (covers.group(1).strip() if covers else ""))
             deadlines.append({"title": it["title"], "due": it.get("due"), "kind": it.get("kind", "assignment"),
                               "topic": topic or "", "source": it.get("source", "Canvas")})
         today = date.today().isoformat()
@@ -118,7 +119,7 @@ def gaps(fw: list[dict]) -> list[dict]:
                            "q": f"What does “{d['title']}” cover?"})
         if not any(d["kind"] == "exam" for d in c["deadlines"]):
             qs.append({"id": f"{ci}-exam", "course": ci, "type": "new_exam",
-                       "q": f"Any tests coming up in {c['course']} that aren't on Canvas? Add one, or skip."})
+                       "q": f"Any tests coming up in {c['course']} that aren't listed yet? Add one, or skip."})
         for k, q in enumerate(c.get("llm_questions", [])):
             qs.append({"id": f"{ci}-llm{k}", "course": ci, "type": "note", "q": q})
     return qs

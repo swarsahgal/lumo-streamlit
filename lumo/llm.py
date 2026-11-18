@@ -39,7 +39,8 @@ def live() -> bool:
     return bool(api_key())
 
 
-def _call(prompt: str, max_tokens: int = 2500) -> dict:
+def _call(prompt, max_tokens: int = 2500) -> dict:
+    """prompt: a string, or a list of content blocks (text and images)."""
     import anthropic
     client = anthropic.Anthropic(api_key=api_key())
     msg = client.messages.create(
@@ -266,3 +267,33 @@ def offline_grade(key_points: list[str], answer: str) -> dict:
     reply = ("Great explanation, you covered it all!" if not missing
              else f"Nice start. Add this next time: {missing[0].lower()}.")
     return {"got": got, "missing": missing, "reply": reply}
+
+
+# ---------------------------------------------------------------- images
+
+def _img_block(data: bytes, mime: str) -> dict:
+    import base64
+    return {"type": "image", "source": {"type": "base64", "media_type": mime,
+                                       "data": base64.b64encode(data).decode()}}
+
+
+def read_image_text(data: bytes, mime: str) -> str:
+    """Transcribe class material in a photo or screenshot (live mode only)."""
+    if not live():
+        return ""
+    out = _call([_img_block(data, mime), {"type": "text", "text":
+                 'Transcribe all the class content in this image (notes, slides, worksheet, '
+                 'handout) as plain text. Return JSON: {"text": str}'}], max_tokens=3000)
+    return out.get("text", "")
+
+
+def read_image_deadlines(data: bytes, mime: str, today: str) -> list[dict]:
+    """Pull deadlines out of a screenshot of a planner, Canvas to-do list or calendar."""
+    if not live():
+        return []
+    out = _call([_img_block(data, mime), {"type": "text", "text": f"""Today is {today}.
+This is a screenshot of a student's school calendar, to-do list or planner.
+List every assignment, quiz, test or exam you can see with its course and due date.
+Return JSON: {{"items": [{{"course": str, "title": str, "due": "YYYY-MM-DD"|null, "kind": "exam|quiz|assignment"}}]}}"""}],
+                max_tokens=2000)
+    return out.get("items", [])

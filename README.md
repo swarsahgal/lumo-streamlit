@@ -10,7 +10,7 @@ before each deadline instead of one cram night. Parents get a retention view.
 
 | Screen | What it does |
 |---|---|
-| **Set up** | **Connect Canvas** (school address + personal access token): Lumo pulls active courses, syllabi (page or uploaded file), modules, assignments, quizzes and calendar events, works out each course's topics and what each test covers, then asks the student only for what's missing (TBA exam dates, what a test covers, a syllabus it couldn't find). Or set up by hand: any grade from 1 to college, any subject, class files, deadlines, .ics calendar. |
+| **Set up** | **Bring in classes any way that works:** paste a **calendar feed link** (Canvas Calendar → Calendar Feed, or Google/Outlook iCal; no school permission needed), drop in **syllabus files** (PDF, Word, PowerPoint, Excel, text, photos), **screenshot** a to-do list or planner (read by Claude), or **connect Canvas** with a token if the school allows. Sources are merged by class name. With a token Lumo pulls active courses, syllabi (page or uploaded file), modules, assignments, quizzes and calendar events, works out each course's topics and what each test covers, then asks the student only for what's missing (TBA exam dates, what a test covers, a syllabus it couldn't find). Or set up by hand: any grade from 1 to college, any subject, class files, deadlines, .ics calendar. |
 | **Today** | Energy check (Low / Okay / Wired sets session length), a 10-day runway of sessions before each deadline, today's sessions, review bank. |
 | **Lesson** | Claude writes a 4-step lesson from the class files, framed in the interest Lumo picks. The hook fades each step; step 4 is a plain question that measures transfer. Wrong answers get hints, never a red X. Ends with a teach-back that Claude grades: what you got, what's missing. |
 | **Parent view** | Retention without the hook, lessons and sessions done vs planned, weak spots, which interests work for which subject, recent lessons. |
@@ -21,7 +21,13 @@ first-try accuracy updates its belief about how well that interest teaches that 
 **Demo mode:** with no API key, Lumo runs on built-in lessons (equivalent fractions and
 paragraph structure) so anyone can click through. Add a key for live lessons on any topic.
 
-## Canvas
+## Getting class data in
+
+**Calendar feed (recommended).** Every Canvas user has a private feed link that lists every assignment, quiz and event across all courses, titled like `Essay draft [English 9]`. Lumo reads it, groups items by course and keeps only upcoming ones. Set `LUMO_TZ` in secrets if students aren't on Eastern time.
+
+**Class files.** PDF, DOCX, PPTX (slides and speaker notes), XLSX, TXT, MD, HTML, CSV and images (transcribed by Claude in live mode).
+
+### Canvas token
 
 Students connect with a personal access token (Canvas → Account → Settings → **+ New Access Token**).
 The token stays in the browser session only; it is never saved to disk or the repo. Some schools

@@ -7,7 +7,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from lumo import canvas, framework, llm, matcher, planner, state, ui
+from lumo import canvas, framework, importers, llm, matcher, planner, state, ui
 
 st.set_page_config(page_title="Lumo", page_icon="🟣", layout="wide")
 ui.css()
@@ -71,7 +71,7 @@ with st.sidebar:
 def page_setup():
     st.markdown('<p class="eyebrow">Set up</p>', unsafe_allow_html=True)
     st.title("Let’s set up your semester")
-    ui.say("Connect Canvas and I’ll find your classes, syllabi, tests and due dates. "
+    ui.say("Paste your calendar link or drop in your syllabi, and I’ll find your classes, tests and due dates. "
            "I’ll only ask you about what I can’t find.")
 
     c1, c2, c3 = st.columns(3)
@@ -130,38 +130,18 @@ def page_setup():
 
 
 def canvas_section():
-    st.subheader("Connect Canvas")
+    st.subheader("Bring in your classes")
     raw = st.session_state.get("canvas_raw")
     if not raw:
-        c1, c2 = st.columns([1, 1])
-        base = c1.text_input("Your school’s Canvas address", placeholder="canvas.myschool.edu")
-        token = c2.text_input("Canvas access token", type="password",
-                              help="Only kept for this session. Never saved.")
-        with st.expander("How do I get a token?"):
-            st.markdown("1. Log in to Canvas and open **Account → Settings**.\n"
-                        "2. Under **Approved Integrations**, click **+ New Access Token**.\n"
-                        "3. Name it *Lumo*, set an expiry date if you like, and click **Generate Token**.\n"
-                        "4. Copy it and paste it here.\n\n"
-                        "Lumo only reads your courses, syllabi, assignments and calendar. "
-                        "Some schools turn off student tokens; if so, set up by hand below.")
-        if st.button("Connect", type="primary", disabled=not (base and token)):
-            try:
-                with st.spinner("Reading your Canvas…"):
-                    cv = canvas.Canvas(base, token)
-                    st.session_state.canvas_raw = canvas.pull(cv)
-                    st.session_state.canvas_live = {"base": cv.base, "token": token}
-                st.rerun()
-            except canvas.CanvasError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Couldn’t reach Canvas at that address ({type(e).__name__}). Check the address.")
+        import_sources()
         return
 
     who = raw["student"].get("name") or "you"
     if not P["name"] and raw["student"].get("name"):
         P["name"] = raw["student"]["name"]
     courses = raw["courses"]
-    st.success(f"Connected. Found {len(courses)} active course{'s' if len(courses) != 1 else ''} for {who}.")
+    st.success(f"Found {len(courses)} class{'es' if len(courses) != 1 else ''}"
+               f"{' for ' + who if who != 'you' else ''}. Untick any you don’t want help with.")
     fw = st.session_state.get("fw")
     if fw is None:
         picked = [c for c in courses if st.checkbox(
@@ -172,8 +152,8 @@ def canvas_section():
             with st.spinner("Reading syllabi and lining up your deadlines…"):
                 st.session_state.fw = framework.build(picked, state.level_label(P["grade"]))
             st.rerun()
-        if c2.button("Disconnect"):
-            for k in ["canvas_raw", "canvas_live", "fw"]:
+        if c2.button("Start again"):
+            for k in ["canvas_raw", "canvas_live", "fw", "sources"]:
                 st.session_state.pop(k, None)
             st.rerun()
         return
@@ -202,7 +182,7 @@ def canvas_section():
                 if q["type"] == "date":
                     ans[k] = st.date_input(q["q"], value=None, min_value=date.today(), key=f"g_{k}")
                 elif q["type"] == "file":
-                    ans[k] = st.file_uploader(q["q"], type=["pdf", "txt", "md"], key=f"g_{k}")
+                    ans[k] = st.file_uploader(q["q"], type=importers.TEXT_TYPES, key=f"g_{k}")
                 elif q["type"] == "new_exam":
                     a, b = st.columns([2, 1])
                     ans[k] = (a.text_input(q["q"], placeholder="e.g. Chapter 5 test", key=f"g_{k}t"),
@@ -218,8 +198,87 @@ def canvas_section():
         st.info(f"{len(P['deadlines'])} deadlines across {len(fw)} classes are in your plan. "
                 "Add your interests below, then build your plan.")
         if st.button("Start over with Canvas"):
-            for k in ["canvas_raw", "canvas_live", "fw", "gaps_done"]:
+            for k in ["canvas_raw", "canvas_live", "fw", "gaps_done", "sources"]:
                 st.session_state.pop(k, None)
+            st.rerun()
+
+
+def import_sources():
+    """Calendar link, syllabus files, screenshots or a Canvas token. Any mix."""
+    srcs = st.session_state.setdefault("sources", [])
+    t1, t2, t3, t4 = st.tabs(["📅 Calendar link", "📄 Syllabus & files", "📸 Screenshot", "🔑 Canvas token"])
+    with t1:
+        st.markdown("Paste your **Canvas Calendar Feed** link. It has every assignment, quiz and test "
+                    "across all your classes, and works without any school permission.")
+        with st.expander("Where do I find it?"):
+            st.markdown("**Canvas:** open **Calendar**, then click **Calendar Feed** at the bottom right "
+                        "and copy the link.\n\n"
+                        "**Google Calendar:** Settings → your calendar → *Secret address in iCal format*.\n\n"
+                        "**Outlook:** Settings → Calendar → Shared calendars → *Publish a calendar* → ICS link.")
+        url = st.text_input("Calendar feed link", placeholder="https://canvas.myschool.edu/feeds/calendars/user_….ics")
+        if st.button("Add calendar", type="primary", disabled=not url):
+            try:
+                with st.spinner("Reading your calendar…"):
+                    found = importers.fetch_ics(url, llm._secret("LUMO_TZ") or importers.DEFAULT_TZ)
+                srcs.extend(found)
+                st.success(f"Found {sum(len(c['items']) for c in found)} upcoming items in {len(found)} classes.")
+            except Exception as e:
+                st.error(str(e) if isinstance(e, ValueError) else f"Couldn’t open that link ({type(e).__name__}).")
+    with t2:
+        st.markdown("Drop in syllabi, schedules, slides or study guides. One file per class works best. "
+                    "Lumo finds the class, topics and test dates.")
+        files = st.file_uploader("Syllabus files", type=importers.TEXT_TYPES, accept_multiple_files=True,
+                                 label_visibility="collapsed", key="syl_files")
+        if files and st.button("Add files", type="primary"):
+            with st.spinner("Reading your files…"):
+                for f in files:
+                    text = importers.file_text(f.name, f.getvalue())
+                    if text.strip():
+                        srcs.append(importers.course_from_file(f.name, text))
+            st.success(f"Added {len(files)} file{'s' if len(files) != 1 else ''}.")
+    with t3:
+        st.markdown("Screenshot your Canvas **To Do** list, planner or calendar and drop it here.")
+        if not llm.live():
+            st.caption("Reading screenshots needs the API key (live mode).")
+        shots = st.file_uploader("Screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
+                                 label_visibility="collapsed", key="shots")
+        if shots and st.button("Read screenshots", type="primary", disabled=not llm.live()):
+            with st.spinner("Reading your screenshots…"):
+                for f in shots:
+                    mime = "image/png" if f.name.lower().endswith(".png") else "image/jpeg"
+                    srcs.extend(importers.courses_from_screenshot(f.getvalue(), mime))
+            st.success("Done.")
+    with t4:
+        st.markdown("If your school allows Canvas access tokens, this pulls syllabi and modules too.")
+        c1, c2 = st.columns([1, 1])
+        base = c1.text_input("Your school’s Canvas address", placeholder="canvas.myschool.edu")
+        token = c2.text_input("Canvas access token", type="password", help="Only kept for this session. Never saved.")
+        st.caption("Canvas → Account → Settings → **+ New Access Token**. Some schools turn this off.")
+        if st.button("Connect Canvas", disabled=not (base and token)):
+            try:
+                with st.spinner("Reading your Canvas…"):
+                    cv = canvas.Canvas(base, token)
+                    data = canvas.pull(cv)
+                    st.session_state.canvas_live = {"base": cv.base, "token": token}
+                srcs.extend(data["courses"])
+                if data["student"].get("name") and not P["name"]:
+                    P["name"] = data["student"]["name"]
+                st.success(f"Found {len(data['courses'])} courses.")
+            except canvas.CanvasError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Couldn’t reach Canvas at that address ({type(e).__name__}).")
+
+    if srcs:
+        merged = importers.merge(srcs)
+        n = sum(len(c["items"]) for c in merged)
+        st.markdown(f"**So far:** {len(merged)} classes, {n} deadlines. Add more above, or continue.")
+        c1, c2 = st.columns([1, 3])
+        if c1.button("Continue", type="primary"):
+            st.session_state.canvas_raw = {"student": {}, "courses": merged}
+            st.rerun()
+        if c2.button("Clear"):
+            st.session_state.sources = []
             st.rerun()
 
 
@@ -270,8 +329,8 @@ def manual_setup():
                                    default=P["subjects"], accept_new_options=True)
     for subj in P["subjects"]:
         st.markdown(f"**{subj}: class files**")
-        files = st.file_uploader(f"Notes, packets or study guides for {subj} (PDF or text)",
-                                 type=["pdf", "txt", "md"], accept_multiple_files=True,
+        files = st.file_uploader(f"Notes, slides, packets or study guides for {subj}",
+                                 type=importers.TEXT_TYPES, accept_multiple_files=True,
                                  key=f"files_{subj}", label_visibility="collapsed")
         for f in files or []:
             have = {m["name"] for m in P["materials"].get(subj, [])}

@@ -77,6 +77,11 @@ def profile() -> dict:
 
 
 def extract_text(upload) -> str:
+    from .importers import file_text
+    return file_text(upload.name, upload.getvalue())
+
+
+def _old_extract_text(upload) -> str:
     name = upload.name.lower()
     data = upload.getvalue()
     if name.endswith(".pdf"):
