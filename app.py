@@ -7,7 +7,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from lumo import llm, matcher, planner, state, ui
+from lumo import canvas, framework, llm, matcher, planner, state, ui
 
 st.set_page_config(page_title="Lumo", page_icon="🟣", layout="wide")
 ui.css()
@@ -36,6 +36,22 @@ with st.sidebar:
     else:
         st.caption("Demo mode: built-in lessons. Add an ANTHROPIC_API_KEY secret for live lessons.")
     st.radio("Go to", PAGES, key="page", label_visibility="collapsed")
+    live_cv = st.session_state.get("canvas_live")
+    if P.get("canvas"):
+        st.caption(f"Canvas connected · {P['canvas'].get('connected', '')}")
+        if live_cv and st.button("Refresh from Canvas", width="stretch"):
+            with st.spinner("Checking Canvas for new deadlines…"):
+                try:
+                    raw = canvas.pull(canvas.Canvas(live_cv["base"], live_cv["token"]))
+                    keep = {c["subject"] for c in st.session_state.get("fw", [])}
+                    st.session_state.canvas_raw = raw
+                    st.session_state.fw = framework.build(
+                        [c for c in raw["courses"]], state.level_label(P["grade"]))
+                    st.session_state.gaps_done = False
+                    go("Set up")
+                except Exception as e:
+                    st.error(f"Refresh failed: {e}")
+            st.rerun()
     st.divider()
     st.download_button("Download progress", json.dumps(P, indent=1),
                        file_name=f"lumo-{state.slug(P['name'] or 'student')}.json",
@@ -46,7 +62,7 @@ with st.sidebar:
         st.session_state.pop("lesson", None)
         st.rerun()
     if st.button("Start over", width="stretch"):
-        for k in ["profile", "lesson", "page"]:
+        for k in ["profile", "lesson", "page", "canvas_raw", "canvas_live", "fw", "gaps_done"]:
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -55,19 +71,23 @@ with st.sidebar:
 def page_setup():
     st.markdown('<p class="eyebrow">Set up</p>', unsafe_allow_html=True)
     st.title("Let’s set up your semester")
-    ui.say("Tell me what you’re into and what your classes are covering. "
-           "I’ll pick the interest that fits each topic best.")
+    ui.say("Connect Canvas and I’ll find your classes, syllabi, tests and due dates. "
+           "I’ll only ask you about what I can’t find.")
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button("Try the demo student (Sam, grade 7)", width="stretch"):
-            st.session_state.profile = state.demo_profile()
-            go("Today")
-            st.rerun()
-    with c2:
-        returning = st.text_input("Returning? Type your name to load your progress",
-                                  placeholder="Your first name")
-        if returning and st.button("Load", key="load_saved"):
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Try the demo student (Sam)", width="stretch"):
+        st.session_state.profile = state.demo_profile()
+        go("Today")
+        st.rerun()
+    if c2.button("Try sample Canvas data (Maya)", width="stretch"):
+        st.session_state.canvas_raw = canvas.sample()
+        st.session_state.canvas_live = None
+        st.session_state.pop("fw", None)
+        st.rerun()
+    with c3:
+        returning = st.text_input("Returning? Your first name", placeholder="Load saved progress",
+                                  label_visibility="collapsed")
+        if returning and st.button("Load my progress", width="stretch"):
             saved = state.load_saved(returning)
             if saved:
                 st.session_state.profile = saved
@@ -75,62 +95,28 @@ def page_setup():
                 st.rerun()
             st.warning("No saved progress under that name on this server.")
 
+    canvas_section()
+
     st.subheader("About you")
     c1, c2 = st.columns([2, 1])
     P["name"] = c1.text_input("First name", P["name"])
-    P["grade"] = c2.selectbox("Grade", list(range(4, 11)), index=list(range(4, 11)).index(P["grade"]))
+    lvl = state.level_label(P["grade"])
+    P["grade"] = c2.selectbox("Grade or level", state.LEVELS,
+                              index=state.LEVELS.index(lvl) if lvl in state.LEVELS else 6)
 
     st.subheader("What are you into?")
     st.caption("Pick a few. Lumo chooses which one to use for each topic.")
     options = sorted(set(state.INTEREST_OPTIONS + P["interests"]))
     P["interests"] = st.multiselect("Interests", options, default=P["interests"],
                                     label_visibility="collapsed")
-    extra = st.text_input("Something else?", placeholder="e.g. skateboarding")
+    extra = st.text_input("Something else?", placeholder="e.g. skateboarding, anime, F1")
     if extra and st.button("Add interest"):
         P["interests"].append(extra.strip().title())
         st.rerun()
 
-    st.subheader("Your classes")
-    P["subjects"] = st.multiselect("Subjects", sorted(set(state.SUBJECT_OPTIONS + P["subjects"])),
-                                   default=P["subjects"])
-    for subj in P["subjects"]:
-        with st.expander(f"{subj}: class files", expanded=False):
-            files = st.file_uploader(f"Notes, packets or study guides for {subj} (PDF or text)",
-                                     type=["pdf", "txt", "md"], accept_multiple_files=True,
-                                     key=f"files_{subj}")
-            for f in files or []:
-                have = {m["name"] for m in P["materials"].get(subj, [])}
-                if f.name not in have:
-                    text = state.extract_text(f)
-                    P["materials"].setdefault(subj, []).append({"name": f.name, "text": text})
-            for m in P["materials"].get(subj, []):
-                st.markdown(f"✅ **{m['name']}** · {len(m['text'].split())} words")
-
-    st.subheader("Deadlines")
-    st.caption("Add tests and due dates, or upload a calendar (.ics). Lumo spreads short sessions before each one.")
-    with st.form("add_deadline", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
-        title = c1.text_input("What’s due", placeholder="Unit 4 test")
-        subj = c2.selectbox("Subject", P["subjects"] or state.SUBJECT_OPTIONS)
-        topic = c3.text_input("Topic", placeholder="Equivalent fractions")
-        due = c4.date_input("Due", min_value=date.today())
-        if st.form_submit_button("Add deadline") and title:
-            P["deadlines"].append({"title": title, "subject": subj, "topic": topic or title,
-                                   "due": due.isoformat()})
-    c1, c2 = st.columns([3, 1])
-    ics = c1.file_uploader("Or upload a school calendar (.ics)", type=["ics"])
-    ics_subj = c2.selectbox("Calendar subject", P["subjects"] or state.SUBJECT_OPTIONS, key="ics_subj")
-    if ics is not None and st.button("Import calendar"):
-        found = state.parse_ics(ics.getvalue().decode("utf-8", "ignore"), ics_subj)
-        P["deadlines"].extend(found)
-        st.success(f"Added {len(found)} upcoming events.")
-    for i, dl in enumerate(sorted(P["deadlines"], key=lambda d: d["due"])):
-        c1, c2 = st.columns([6, 1])
-        c1.markdown(f"<span class='pill gold'>{dl['due']}</span> **{dl['title']}** · {dl['subject']} · {dl['topic']}",
-                    unsafe_allow_html=True)
-        if c2.button("Remove", key=f"rm_{i}_{dl['title']}"):
-            P["deadlines"].remove(dl)
-            st.rerun()
+    with st.expander("Classes, files and deadlines (add or edit by hand)",
+                     expanded=not P.get("canvas")):
+        manual_setup()
 
     st.divider()
     ready = P["name"] and P["interests"]
@@ -141,6 +127,186 @@ def page_setup():
         st.rerun()
     if not ready:
         st.caption("Add your name and at least one interest to continue.")
+
+
+def canvas_section():
+    st.subheader("Connect Canvas")
+    raw = st.session_state.get("canvas_raw")
+    if not raw:
+        c1, c2 = st.columns([1, 1])
+        base = c1.text_input("Your school’s Canvas address", placeholder="canvas.myschool.edu")
+        token = c2.text_input("Canvas access token", type="password",
+                              help="Only kept for this session. Never saved.")
+        with st.expander("How do I get a token?"):
+            st.markdown("1. Log in to Canvas and open **Account → Settings**.\n"
+                        "2. Under **Approved Integrations**, click **+ New Access Token**.\n"
+                        "3. Name it *Lumo*, set an expiry date if you like, and click **Generate Token**.\n"
+                        "4. Copy it and paste it here.\n\n"
+                        "Lumo only reads your courses, syllabi, assignments and calendar. "
+                        "Some schools turn off student tokens; if so, set up by hand below.")
+        if st.button("Connect", type="primary", disabled=not (base and token)):
+            try:
+                with st.spinner("Reading your Canvas…"):
+                    cv = canvas.Canvas(base, token)
+                    st.session_state.canvas_raw = canvas.pull(cv)
+                    st.session_state.canvas_live = {"base": cv.base, "token": token}
+                st.rerun()
+            except canvas.CanvasError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Couldn’t reach Canvas at that address ({type(e).__name__}). Check the address.")
+        return
+
+    who = raw["student"].get("name") or "you"
+    if not P["name"] and raw["student"].get("name"):
+        P["name"] = raw["student"]["name"]
+    courses = raw["courses"]
+    st.success(f"Connected. Found {len(courses)} active course{'s' if len(courses) != 1 else ''} for {who}.")
+    fw = st.session_state.get("fw")
+    if fw is None:
+        picked = [c for c in courses if st.checkbox(
+            f"**{c['name']}** · {len(c['items'])} items · {'syllabus found' if c['syllabus'] else 'no syllabus'}",
+            value=True, key=f"pick_{c['id']}")]
+        c1, c2 = st.columns([1, 3])
+        if c1.button("Read my courses", type="primary", disabled=not picked):
+            with st.spinner("Reading syllabi and lining up your deadlines…"):
+                st.session_state.fw = framework.build(picked, state.level_label(P["grade"]))
+            st.rerun()
+        if c2.button("Disconnect"):
+            for k in ["canvas_raw", "canvas_live", "fw"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+        return
+
+    st.markdown("#### Here’s what I found")
+    for c in fw:
+        dated = [d for d in c["deadlines"] if d["due"]]
+        with st.expander(f"{c['subject']} · {len(dated)} dated deadlines · {len(c['topics'])} topics"):
+            if c["topics"]:
+                st.markdown(" ".join(f"<span class='pill'>{t}</span>" for t in c["topics"]),
+                            unsafe_allow_html=True)
+            for d in sorted(c["deadlines"], key=lambda d: d["due"] or "9999"):
+                st.markdown(f"<span class='pill gold'>{d['due'] or 'no date'}</span> **{d['title']}** "
+                            f"· {d['kind']}{' · ' + d['topic'] if d['topic'] else ''} "
+                            f"<span style='color:#7A7D99'>({d['source']})</span>", unsafe_allow_html=True)
+
+    qs = framework.gaps(fw)
+    answered = st.session_state.get("gaps_done", False)
+    if qs and not answered:
+        st.markdown("#### A few things I couldn’t find")
+        ui.say("Answer what you can and skip the rest. You can always add more later.", mood="think")
+        with st.form("gaps"):
+            ans = {}
+            for q in qs:
+                k = q["id"]
+                if q["type"] == "date":
+                    ans[k] = st.date_input(q["q"], value=None, min_value=date.today(), key=f"g_{k}")
+                elif q["type"] == "file":
+                    ans[k] = st.file_uploader(q["q"], type=["pdf", "txt", "md"], key=f"g_{k}")
+                elif q["type"] == "new_exam":
+                    a, b = st.columns([2, 1])
+                    ans[k] = (a.text_input(q["q"], placeholder="e.g. Chapter 5 test", key=f"g_{k}t"),
+                              b.date_input("Date", value=None, min_value=date.today(), key=f"g_{k}d"))
+                else:
+                    ans[k] = st.text_input(q["q"], key=f"g_{k}")
+            if st.form_submit_button("Save and build my plan", type="primary"):
+                apply_gaps(fw, qs, ans)
+                st.session_state.gaps_done = True
+                st.rerun()
+    else:
+        apply_framework(fw)
+        st.info(f"{len(P['deadlines'])} deadlines across {len(fw)} classes are in your plan. "
+                "Add your interests below, then build your plan.")
+        if st.button("Start over with Canvas"):
+            for k in ["canvas_raw", "canvas_live", "fw", "gaps_done"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+
+def apply_gaps(fw, qs, ans):
+    notes = {}
+    for q in qs:
+        a, c = ans.get(q["id"]), fw[q["course"]]
+        if not a:
+            continue
+        if q["type"] == "date":
+            c["deadlines"][q["deadline"]]["due"] = a.isoformat()
+        elif q["type"] == "topic":
+            c["deadlines"][q["deadline"]]["topic"] = a.strip()
+            if a.strip() not in c["topics"]:
+                c["topics"].append(a.strip())
+        elif q["type"] == "topics":
+            c["topics"] = [t.strip() for t in a.split(",") if t.strip()]
+        elif q["type"] == "file":
+            c["syllabus"] = state.extract_text(a)
+        elif q["type"] == "new_exam":
+            title, d = a
+            if title and d:
+                c["deadlines"].append({"title": title, "due": d.isoformat(), "kind": "exam",
+                                       "topic": title, "source": "You"})
+        elif q["type"] == "note":
+            notes.setdefault(q["course"], []).append(f"Q: {q['q']}\nA: {a}")
+    for ci, lines in notes.items():
+        fw[ci]["syllabus"] += "\n\nNotes from the student:\n" + "\n".join(lines)
+
+
+def apply_framework(fw):
+    """Write the Canvas framework into the profile (idempotent)."""
+    P["subjects"] = list(dict.fromkeys(c["subject"] for c in fw))
+    manual = [d for d in P["deadlines"] if d.get("source") in (None, "You (manual)")]
+    P["deadlines"] = framework.to_profile_deadlines(fw) + manual
+    for c in fw:
+        mats = [m for m in P["materials"].get(c["subject"], []) if m["name"] != "Canvas syllabus"]
+        if c["syllabus"].strip():
+            topics = "Topics: " + ", ".join(c["topics"]) + "\n\n" if c["topics"] else ""
+            mats.insert(0, {"name": "Canvas syllabus", "text": topics + c["syllabus"]})
+        P["materials"][c["subject"]] = mats
+    P["canvas"] = {"connected": date.today().isoformat(),
+                   "base": (st.session_state.get("canvas_live") or {}).get("base", "sample")}
+
+
+def manual_setup():
+    P["subjects"] = st.multiselect("Subjects", sorted(set(state.SUBJECT_OPTIONS + P["subjects"])),
+                                   default=P["subjects"], accept_new_options=True)
+    for subj in P["subjects"]:
+        st.markdown(f"**{subj}: class files**")
+        files = st.file_uploader(f"Notes, packets or study guides for {subj} (PDF or text)",
+                                 type=["pdf", "txt", "md"], accept_multiple_files=True,
+                                 key=f"files_{subj}", label_visibility="collapsed")
+        for f in files or []:
+            have = {m["name"] for m in P["materials"].get(subj, [])}
+            if f.name not in have:
+                P["materials"].setdefault(subj, []).append({"name": f.name, "text": state.extract_text(f)})
+        for m in P["materials"].get(subj, []):
+            st.caption(f"✅ {m['name']} · {len(m['text'].split())} words")
+
+    st.markdown("**Deadlines**")
+    with st.form("add_deadline", clear_on_submit=True):
+        c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 1, 1])
+        title = c1.text_input("What’s due", placeholder="Unit 4 test")
+        subj = c2.selectbox("Subject", P["subjects"] or state.SUBJECT_OPTIONS)
+        topic = c3.text_input("Topic", placeholder="Equivalent fractions")
+        kind = c4.selectbox("Type", ["exam", "quiz", "assignment"])
+        due = c5.date_input("Due", min_value=date.today())
+        if st.form_submit_button("Add deadline") and title:
+            P["deadlines"].append({"title": title, "subject": subj, "topic": topic or title,
+                                   "due": due.isoformat(), "kind": kind, "source": "You (manual)"})
+    c1, c2 = st.columns([3, 1])
+    ics = c1.file_uploader("Or upload a calendar (.ics)", type=["ics"])
+    ics_subj = c2.selectbox("Calendar subject", P["subjects"] or state.SUBJECT_OPTIONS, key="ics_subj")
+    if ics is not None and st.button("Import calendar"):
+        found = state.parse_ics(ics.getvalue().decode("utf-8", "ignore"), ics_subj)
+        for f in found:
+            f["source"] = "You (manual)"
+        P["deadlines"].extend(found)
+        st.success(f"Added {len(found)} upcoming events.")
+    for i, dl in enumerate(sorted(P["deadlines"], key=lambda d: d["due"])):
+        c1, c2 = st.columns([6, 1])
+        c1.markdown(f"<span class='pill gold'>{dl['due']}</span> **{dl['title']}** · {dl['subject']} · {dl['topic']}",
+                    unsafe_allow_html=True)
+        if c2.button("Remove", key=f"rm_{i}_{dl['title']}"):
+            P["deadlines"].remove(dl)
+            st.rerun()
 
 
 # ================================================================ today
@@ -213,7 +379,7 @@ def begin_lesson(subject, topic):
     weak = [r["concept"] for r in P["review_bank"] if r["subject"] == subject][-3:]
     with st.spinner(f"Lumo is building a {subject} lesson around {interest}…"):
         try:
-            lesson = llm.generate_lesson(subject, topic, P["grade"], interest,
+            lesson = llm.generate_lesson(subject, topic, state.level_label(P["grade"]), interest,
                                          material_for(subject), weak)
         except Exception as e:  # network, key or parse problems
             st.error(f"Couldn’t build that lesson: {e}")
@@ -267,6 +433,9 @@ def page_lesson():
         i = L["step"]
         s = steps[i]
         if i == 0:
+            if data.get("sample"):
+                st.info(f"Demo mode: Lumo can’t write a {L['subject']} lesson on “{L['topic']}” without an "
+                        "API key, so this is a built-in sample lesson. Add a key in the app’s Secrets for real lessons.")
             ui.say(f"Let’s do this one with <b>{L['interest'].lower()}</b>.")
         st.markdown(f"### {s['title']}")
         st.markdown(f"<div class='card'>{s['explain']}</div>", unsafe_allow_html=True)

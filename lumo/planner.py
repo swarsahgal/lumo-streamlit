@@ -9,7 +9,10 @@ from datetime import date, timedelta
 ENERGY_MINUTES = {"Low": 5, "Okay": 8, "Wired": 12}
 
 
-def session_days(today: date, due: date) -> list[date]:
+MAX_SESSIONS = {"exam": 6, "quiz": 3, "assignment": 3}
+
+
+def session_days(today: date, due: date, kind: str = "exam") -> list[date]:
     """Days to study for one deadline: spaced out, last one the day before."""
     days_left = (due - today).days
     if days_left <= 0:
@@ -18,7 +21,7 @@ def session_days(today: date, due: date) -> list[date]:
         return [today]
     gap = 1 if days_left <= 5 else 2
     offsets = set(range(0, days_left, gap)) | {days_left - 1}
-    days = [today + timedelta(days=o) for o in sorted(offsets)][-6:]
+    days = [today + timedelta(days=o) for o in sorted(offsets)][-MAX_SESSIONS.get(kind, 4):]
     return sorted(days)
 
 
@@ -28,7 +31,7 @@ def build_plan(deadlines: list[dict], today: date | None = None) -> list[dict]:
     plan = []
     for dl in deadlines:
         due = date.fromisoformat(dl["due"])
-        for d in session_days(today, due):
+        for d in session_days(today, due, dl.get("kind", "exam")):
             plan.append({"day": d.isoformat(), "subject": dl["subject"],
                          "topic": dl.get("topic") or dl["title"], "for": dl["title"],
                          "due": dl["due"]})

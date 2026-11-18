@@ -9,8 +9,8 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 HOOK_LEVELS = ["full", "partial", "light", "none"]
 
 SYSTEM = (
-    "You are Lumo, a warm study companion for middle-school students with ADHD. "
-    "Write short, concrete, upbeat text at a grade-appropriate reading level. "
+    "You are Lumo, a warm study companion for students with ADHD, from elementary school through college. "
+    "Write short, concrete, upbeat text pitched at the student's level. "
     "Never shame mistakes; wrong answers get a gentle nudge, never a red X. "
     "Never ask for personal information. Keep everything school-appropriate. "
     "When class material is provided, stay faithful to it and do not invent facts "
@@ -55,14 +55,14 @@ def _call(prompt: str, max_tokens: int = 2500) -> dict:
 
 # ---------------------------------------------------------------- lessons
 
-def generate_lesson(subject: str, topic: str, grade: int, interest: str,
+def generate_lesson(subject: str, topic: str, grade, interest: str,
                     material: str = "", weak_spots: list[str] | None = None) -> dict:
     if not live():
         return offline_lesson(subject, topic, interest)
     excerpt = (material or "").strip()[:12000]
     weak = ", ".join(weak_spots or []) or "none yet"
     prompt = f"""Make a 4-step micro-lesson.
-Student: grade {grade}. Subject: {subject}. Topic: {topic}.
+Student level: {grade}. Subject: {subject}. Topic: {topic}.
 Hook interest: {interest}. Concepts this student found hard before: {weak}.
 
 Fade the hook across the steps:
@@ -134,8 +134,8 @@ def suggest_topics(subject: str, material: str) -> list[str]:
         heads = [l.strip("#*- \t") for l in material.splitlines()
                  if 3 < len(l.strip()) < 60 and (l.strip().startswith("#") or l.strip().istitle())]
         return list(dict.fromkeys(heads))[:6]
-    prompt = f"""From this {subject} class material, list up to 6 teachable topics a
-middle-schooler would study for a test, each 2-5 words.
+    prompt = f"""From this {subject} class material, list up to 8 teachable topics a
+student would study for a test, each 2-5 words.
 <<<
 {material[:12000]}
 >>>
@@ -164,8 +164,15 @@ def _nouns(interest):
 
 
 def offline_lesson(subject: str, topic: str, interest: str) -> dict:
+    lesson = _offline_lesson(subject, topic, interest)
+    t = f"{subject} {topic}".lower()
+    lesson["sample"] = not any(w in t for w in ("fraction", "paragraph", "sentence", "english", "essay", "writing"))
+    return lesson
+
+
+def _offline_lesson(subject: str, topic: str, interest: str) -> dict:
     a, b, scene = _nouns(interest)
-    if subject.lower().startswith("eng") or "paragraph" in topic.lower() or "sentence" in topic.lower():
+    if any(w in f"{subject} {topic}".lower() for w in ("eng", "paragraph", "sentence", "essay", "writing")):
         steps = [
             {"hook_level": "full", "title": "Find the main idea",
              "explain": f"A paragraph is like {scene}: one big idea holds it together. The topic sentence says that big idea, usually first.",

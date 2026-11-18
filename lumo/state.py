@@ -12,11 +12,17 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INTEREST_OPTIONS = ["Basketball", "Minecraft", "Video games", "Music", "Soccer",
                     "Dinosaurs", "Drawing", "Space", "Cooking", "Animals"]
 SUBJECT_OPTIONS = ["Math", "English", "Science", "History"]
+LEVELS = [f"Grade {g}" for g in range(1, 13)] + ["College", "Graduate / adult"]
+
+
+def level_label(v) -> str:
+    """Older saves stored the grade as a number."""
+    return f"Grade {v}" if isinstance(v, int) or str(v).isdigit() else str(v)
 
 
 def blank_profile() -> dict:
     return {
-        "name": "", "grade": 7, "interests": [], "subjects": ["Math", "English"],
+        "name": "", "grade": "Grade 7", "canvas": None, "interests": [], "subjects": ["Math", "English"],
         "materials": {},          # subject -> [{name, text}]
         "deadlines": [],          # [{title, subject, topic, due}]
         "energy": "Okay",
@@ -31,7 +37,7 @@ def demo_profile() -> dict:
     today = date.today()
     p = blank_profile()
     p.update({
-        "name": "Sam", "grade": 7, "interests": ["Basketball", "Minecraft", "Drawing"],
+        "name": "Sam", "grade": "Grade 7", "interests": ["Basketball", "Minecraft", "Drawing"],
         "deadlines": [
             {"title": "Paragraph assignment", "subject": "English", "topic": "Paragraph structure",
              "due": (today + timedelta(days=6)).isoformat()},
